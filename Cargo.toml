@@ -1,0 +1,23 @@
+[package]
+name = "text_insights"
+version = "0.1.0"
+edition = "2021"
+authors = ["You <your.email@example.com>"]
+description = "A tool to analyze text patterns and generate visual insights"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/yourusername/text_insights"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+walkdir = "2.4"
+regex = "1.10"
+rayon = "1.8"
+unicode-segmentation = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+plotters = "0.3"
+indicatif = "0.17"
+anyhow = "1.0"
+chrono = "0.4"
+colored = "2.0"
