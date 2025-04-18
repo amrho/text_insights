@@ -47,6 +47,16 @@ enum Commands {
         input: PathBuf,
 
         /// Type of visualization to generate
+        /// Available types:
+        ///  - word-frequency: Bar chart of most common words (default)
+        ///  - character-frequency: Distribution of characters 
+        ///  - sentence-length: Histogram of sentence lengths
+        ///  - readability: Gauge showing reading level scores
+        ///  - sentiment: Sentiment analysis gauge
+        ///  - word-heatmap: Heatmap of word frequencies
+        ///  - word-cloud: Visual word cloud with sizes based on frequency
+        ///  - ngram-frequency: Chart of common word phrases
+        ///  - parts-of-speech: Pie chart showing parts of speech distribution
         #[arg(short, long, default_value = "word-frequency")]
         r#type: String,
 

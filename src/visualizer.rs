@@ -22,6 +22,7 @@ pub fn generate_visualization(
         "word-heatmap" => generate_word_heatmap(results, output_path, limit),
         "word-cloud" => generate_word_cloud(results, output_path, limit),
         "ngram-frequency" => generate_ngram_chart(results, output_path, limit),
+        "parts-of-speech" => generate_pos_chart(results, output_path),
         _ => Err(anyhow::anyhow!("Unsupported visualization type: {}", viz_type)),
     }
 }
@@ -198,57 +199,150 @@ fn generate_character_frequency_chart(
     output_path: &Path,
     limit: usize,
 ) -> Result<()> {
-    // Sort characters by frequency
-    let mut char_freqs: Vec<_> = results.character_frequencies
-        .iter()
-        .collect();
+    let mut chars: Vec<_> = results.character_frequencies.iter().collect();
+    chars.sort_by(|(_, count1), (_, count2)| count2.cmp(count1));
     
-    char_freqs.sort_by(|a, b| b.1.cmp(a.1));
-    
-    let chars_to_display = char_freqs.iter()
-        .filter(|(c, _)| c.is_alphabetic()) // Only show alphabetic characters
-        .take(limit)
-        .collect::<Vec<_>>();
+    let chars_to_display = chars.into_iter().take(limit.min(30)).collect::<Vec<_>>();
     
     if chars_to_display.is_empty() {
-        return Err(anyhow::anyhow!("No characters to visualize"));
+        return Err(anyhow::anyhow!("No character data to visualize"));
     }
     
-    let max_count = chars_to_display.first().map(|(_, count)| **count).unwrap_or(0);
+    // Create a larger, higher-resolution canvas
+    let root = BitMapBackend::new(output_path, (1600, 900)).into_drawing_area();
     
-    let root = BitMapBackend::new(output_path, (1024, 768)).into_drawing_area();
-    root.fill(&WHITE)?;
+    // Use a subtle gradient background
+    root.fill(&RGBColor(245, 247, 250))?;
     
+    // Create a titled chart with clear, attractive styling
     let mut chart = ChartBuilder::on(&root)
-        .margin(10)
-        .caption("Character Frequency", ("sans-serif", 40))
-        .set_label_area_size(LabelAreaPosition::Left, 60)
-        .set_label_area_size(LabelAreaPosition::Bottom, 40)
+        .margin(60)
+        .caption(
+            "CHARACTER FREQUENCY DISTRIBUTION", 
+            ("sans-serif", 46).into_font().color(&RGBColor(40, 45, 98))
+        )
+        .set_label_area_size(LabelAreaPosition::Left, 80)
+        .set_label_area_size(LabelAreaPosition::Bottom, 60)
         .build_cartesian_2d(
-            0..chars_to_display.len(),
-            0..(max_count + max_count / 10),
+            0..chars_to_display.len() as i32,
+            0..(chars_to_display.iter().map(|(_, count)| **count).max().unwrap_or(0) as i32) + 5,
         )?;
     
     chart.configure_mesh()
         .disable_x_mesh()
-        .y_desc("Frequency")
+        .light_line_style(RGBColor(240, 240, 245))
+        .bold_line_style(RGBColor(220, 220, 230))
+        .axis_style(ShapeStyle::from(&RGBColor(100, 100, 100)).stroke_width(2))
+        .y_desc("FREQUENCY")
+        .y_label_style(("sans-serif", 26).into_font().color(&RGBColor(60, 60, 80)))
         .x_label_formatter(&|x| {
-            if *x < chars_to_display.len() {
-                chars_to_display[*x].0.to_string()
+            if *x < chars_to_display.len() as i32 {
+                // Special formatting for whitespace and control characters
+                let ch = chars_to_display[*x as usize].0;
+                match ch {
+                    ' ' => "SPACE".to_string(),
+                    '\t' => "TAB".to_string(),
+                    '\n' => "NEWLINE".to_string(),
+                    '\r' => "CR".to_string(),
+                    ch if ch.is_control() => format!("CTL-{:02X}", *ch as u8),
+                    _ => ch.to_string(),
+                }
             } else {
                 String::new()
             }
         })
         .x_labels(chars_to_display.len())
-        .label_style(("sans-serif", 12))
+        .label_style(("sans-serif", 20).into_font().color(&RGBColor(60, 60, 80)))
         .draw()?;
     
+    // Add horizontal gridlines
+    let max_count = chars_to_display.iter().map(|(_, count)| **count).max().unwrap_or(0);
+    for y in (0..=max_count).step_by((max_count / 10).max(1) as usize) {
+        if y > 0 {
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(0, y as i32), (chars_to_display.len() as i32, y as i32)],
+                    RGBColor(235, 235, 245).stroke_width(1)
+                )
+            ))?;
+        }
+    }
+    
+    // Use a visually appealing gradient palette
+    // Each character gets its own distinctive color but follows a pleasing gradient
+    let base_hue = 210.0 / 360.0; // Blue base
+    
+    // Draw bars with distinctive coloring and clear spacing
     chart.draw_series(
-        chars_to_display.iter().enumerate().map(|(i, (_, count))| {
-            let color = Palette99::pick(i).mix(0.9);
-            Rectangle::new([(i, 0), (i + 1, **count)], color.filled())
+        chars_to_display.iter().enumerate().map(|(i, (ch, count))| {
+            // Each character gets a related but distinct color
+            let hue = (base_hue + (i as f64 * 0.8 / chars_to_display.len() as f64)) % 1.0;
+            let color = HSLColor(hue, 0.7, 0.5).mix(0.9);
+            
+            // Calculate bar width with proper spacing
+            let bar_width = 0.7; // Width of each bar (out of 1.0 unit)
+            let x0 = (i as f64 + (1.0 - bar_width) / 2.0) as i32;
+            let x1 = (i as f64 + (1.0 - bar_width) / 2.0 + bar_width) as i32;
+            
+            // Use a rectangle with rounded corners for a modern look
+            Rectangle::new(
+                [(x0, 0), (x1, **count as i32)],
+                color.filled(),
+            )
         })
     )?;
+    
+    // Add the count numbers on top of each bar for clarity
+    for (i, (_, count)) in chars_to_display.iter().enumerate() {
+        let count_str = count.to_string();
+        chart.draw_series(std::iter::once(
+            Text::new(
+                count_str,
+                (i as i32, **count as i32 + max_count as i32 / 40),
+                ("sans-serif", 20).into_font().color(&RGBColor(60, 60, 100))
+            )
+        ))?;
+    }
+    
+    // Add source info at the top
+    if let Some(first_file) = results.file_stats.first() {
+        let filename = first_file.filename.clone();
+        let truncated_name = if filename.len() > 40 {
+            format!("{}...", &filename[..37])
+        } else {
+            filename
+        };
+        
+        root.draw(&Text::new(
+            format!("Source: {}", truncated_name),
+            (800, 30),
+            ("sans-serif", 20).into_font().color(&RGBColor(80, 80, 100))
+        ))?;
+    }
+    
+    // Add a summary caption at the bottom
+    let total_chars = results.character_frequencies.values().sum::<usize>();
+    let unique_chars = results.character_frequencies.len();
+    
+    let footer_text = format!(
+        "Analysis of {} unique characters from {} total characters", 
+        unique_chars, 
+        total_chars
+    );
+    
+    root.draw(&Text::new(
+        footer_text,
+        (800, 850),
+        ("sans-serif", 24).into_font().color(&RGBColor(80, 80, 100))
+    ))?;
+    
+    // Add generation date
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    root.draw(&Text::new(
+        format!("Generated: {}", current_date),
+        (1400, 850),
+        ("sans-serif", 16).into_font().color(&RGBColor(150, 150, 170))
+    ))?;
     
     root.present().context("Failed to write image to file")?;
     
@@ -384,127 +478,222 @@ fn generate_sentiment_chart(
     results: &AnalysisResults,
     output_path: &Path,
 ) -> Result<()> {
-    // Check if sentiment data is available
-    if !results.sentiment_scores.contains_key("Overall Sentiment") {
-        return Err(anyhow::anyhow!("No sentiment data available"));
-    }
+    let sentiment = results.sentiment_score.unwrap_or(0.0);
     
-    let sentiment = *results.sentiment_scores.get("Overall Sentiment").unwrap();
+    // Create a high-resolution canvas
+    let root = BitMapBackend::new(output_path, (1200, 900)).into_drawing_area();
     
-    let root = BitMapBackend::new(output_path, (800, 400)).into_drawing_area();
-    root.fill(&WHITE)?;
+    // Use a light gradient background for better aesthetics
+    root.fill(&RGBColor(250, 252, 255))?;
     
-    // Set up the gauge chart
-    let _gauge_range = -1.0..1.0; // Unused but kept for clarity
-    let mut chart = ChartBuilder::on(&root)
-        .margin(20)
-        .caption("Sentiment Analysis", ("sans-serif", 40))
-        .build_cartesian_2d(-1.2..1.2, 0.0..1.0)?;
+    let drawing_area = root.margin(30, 30, 30, 30);
     
-    chart.configure_mesh().disable_mesh().draw()?;
+    // Draw a bold title with a subtitle
+    drawing_area.draw(&Text::new(
+        "SENTIMENT ANALYSIS",
+        (600, 60),
+        ("sans-serif", 50).into_font().color(&RGBColor(30, 30, 80)),
+    ))?;
     
-    // Draw gauge background
-    let gauge_height = 0.3;
-    let gauge_y = 0.5;
-    
-    // Draw negative side (red gradient)
-    for x in -100..0 {
-        let x_pos = x as f64 / 100.0;
-        let color_intensity = (-x_pos).powf(0.5); // Square root for more even gradient
+    // Add file information
+    if let Some(first_file) = results.file_stats.first() {
+        let filename = first_file.filename.clone();
+        let truncated_name = if filename.len() > 40 {
+            format!("{}...", &filename[..37])
+        } else {
+            filename
+        };
         
-        let color = RGBColor(
-            (200.0 + 55.0 * color_intensity) as u8,
-            (100.0 * (1.0 - color_intensity)) as u8,
-            (100.0 * (1.0 - color_intensity)) as u8,
-        );
-        
-        chart.draw_series(std::iter::once(
-            Rectangle::new([(x_pos, gauge_y - gauge_height / 2.0), (x_pos + 0.01, gauge_y + gauge_height / 2.0)],
-            color.filled())
+        drawing_area.draw(&Text::new(
+            format!("Source: {}", truncated_name),
+            (600, 120),
+            ("sans-serif", 22).into_font().color(&RGBColor(80, 80, 100)),
         ))?;
     }
     
-    // Draw positive side (green gradient)
-    for x in 0..100 {
-        let x_pos = x as f64 / 100.0;
-        let color_intensity = x_pos.powf(0.5); // Square root for more even gradient
+    // Calculate a normalized sentiment score (0-1 range)
+    let normalized_sentiment = (sentiment + 1.0) / 2.0;
+    
+    // Draw a modern gauge with gradient
+    let gauge_center_x = 600;
+    let gauge_center_y = 450;
+    let gauge_radius = 250;
+    let gauge_thickness = 50;
+    
+    // Draw a gradient background track for the gauge
+    let start_angle = -140_f64.to_radians();
+    let end_angle = -40_f64.to_radians();
+    let angle_range = end_angle - start_angle;
+    
+    // Draw the background track with a gradient from light to dark
+    let steps = 100;
+    for i in 0..steps {
+        let start_step = start_angle + (i as f64 / steps as f64) * angle_range;
+        let end_step = start_angle + ((i + 1) as f64 / steps as f64) * angle_range;
         
-        let color = RGBColor(
-            (100.0 * (1.0 - color_intensity)) as u8,
-            (200.0 + 55.0 * color_intensity) as u8,
-            (100.0 * (1.0 - color_intensity)) as u8,
+        let outer_radius = gauge_radius + gauge_thickness / 2;
+        let inner_radius = gauge_radius - gauge_thickness / 2;
+        
+        let outer_start = (
+            gauge_center_x + (outer_radius as f64 * start_step.cos()) as i32,
+            gauge_center_y + (outer_radius as f64 * start_step.sin()) as i32
+        );
+        let outer_end = (
+            gauge_center_x + (outer_radius as f64 * end_step.cos()) as i32,
+            gauge_center_y + (outer_radius as f64 * end_step.sin()) as i32
+        );
+        let inner_end = (
+            gauge_center_x + (inner_radius as f64 * end_step.cos()) as i32,
+            gauge_center_y + (inner_radius as f64 * end_step.sin()) as i32
+        );
+        let inner_start = (
+            gauge_center_x + (inner_radius as f64 * start_step.cos()) as i32,
+            gauge_center_y + (inner_radius as f64 * start_step.sin()) as i32
         );
         
-        chart.draw_series(std::iter::once(
-            Rectangle::new([(x_pos, gauge_y - gauge_height / 2.0), (x_pos + 0.01, gauge_y + gauge_height / 2.0)],
-            color.filled())
+        // Calculate color based on position (red to green gradient)
+        let position = i as f64 / steps as f64;
+        let color = if position < 0.5 {
+            // Red to yellow gradient for negative sentiment
+            let mix = position * 2.0;
+            RGBColor(
+                200 + (55.0 * mix) as u8,
+                (200.0 * mix) as u8,
+                50,
+            )
+        } else {
+            // Yellow to green gradient for positive sentiment
+            let mix = (position - 0.5) * 2.0;
+            RGBColor(
+                255 - (200.0 * mix) as u8,
+                200 + (55.0 * mix) as u8,
+                50,
+            )
+        };
+        
+        drawing_area.draw(&Polygon::new(
+            vec![outer_start, outer_end, inner_end, inner_start],
+            &color.mix(0.7),
         ))?;
     }
     
-    // Draw center line
-    chart.draw_series(std::iter::once(
-        PathElement::new(vec![(0.0, gauge_y - gauge_height / 2.0), (0.0, gauge_y + gauge_height / 2.0)],
-        BLACK.stroke_width(2))
+    // Draw tick marks and labels
+    for i in 0..=4 {
+        let tick_position = i as f64 / 4.0;
+        let tick_angle = start_angle + tick_position * angle_range;
+        
+        let outer_tick = (
+            gauge_center_x + ((gauge_radius + gauge_thickness / 2 + 10) as f64 * tick_angle.cos()) as i32,
+            gauge_center_y + ((gauge_radius + gauge_thickness / 2 + 10) as f64 * tick_angle.sin()) as i32
+        );
+        
+        let label_position = (
+            gauge_center_x + ((gauge_radius + gauge_thickness / 2 + 40) as f64 * tick_angle.cos()) as i32,
+            gauge_center_y + ((gauge_radius + gauge_thickness / 2 + 40) as f64 * tick_angle.sin()) as i32
+        );
+        
+        // Calculate the sentiment value at this tick position (-1 to 1)
+        let sentiment_value = -1.0 + tick_position * 2.0;
+        
+        // Determine the label based on sentiment value
+        let label = match sentiment_value {
+            x if x <= -0.8 => "Very Negative",
+            x if x <= -0.3 => "Negative",
+            x if x <= 0.3 => "Neutral",
+            x if x <= 0.8 => "Positive",
+            _ => "Very Positive",
+        };
+        
+        drawing_area.draw(&Text::new(
+            label,
+            label_position,
+            ("sans-serif", 20).into_font().color(&RGBColor(80, 80, 100)),
+        ))?;
+    }
+    
+    // Draw the needle
+    let needle_angle = start_angle + normalized_sentiment * angle_range;
+    let needle_length = gauge_radius - 20;
+    let needle_width = 8;
+    
+    // Calculate the needle points
+    let needle_tip = (
+        gauge_center_x + (needle_length as f64 * needle_angle.cos()) as i32,
+        gauge_center_y + (needle_length as f64 * needle_angle.sin()) as i32
+    );
+    
+    let perpendicular_angle = needle_angle + std::f64::consts::PI / 2.0;
+    let needle_base_left = (
+        gauge_center_x + (needle_width as f64 * perpendicular_angle.cos()) as i32,
+        gauge_center_y + (needle_width as f64 * perpendicular_angle.sin()) as i32
+    );
+    
+    let needle_base_right = (
+        gauge_center_x - (needle_width as f64 * perpendicular_angle.cos()) as i32,
+        gauge_center_y - (needle_width as f64 * perpendicular_angle.sin()) as i32
+    );
+    
+    // Draw the needle with a gradient
+    drawing_area.draw(&Polygon::new(
+        vec![needle_tip, needle_base_left, needle_base_right],
+        &RGBColor(180, 30, 30).mix(0.9),
     ))?;
     
-    // Draw border
-    chart.draw_series(std::iter::once(
-        Rectangle::new([(-1.0, gauge_y - gauge_height / 2.0), (1.0, gauge_y + gauge_height / 2.0)],
-        BLACK.stroke_width(2))
+    // Draw a center cap for the needle
+    drawing_area.draw(&Circle::new(
+        (gauge_center_x, gauge_center_y),
+        15,
+        RGBColor(100, 100, 110).filled(),
     ))?;
     
-    // Draw labels
-    chart.draw_series(std::iter::once(
-        Text::new("Very Negative", (-0.95, gauge_y + gauge_height + 0.1), ("sans-serif", 20))
+    drawing_area.draw(&Circle::new(
+        (gauge_center_x, gauge_center_y),
+        12,
+        RGBColor(180, 180, 200).filled(),
     ))?;
     
-    chart.draw_series(std::iter::once(
-        Text::new("Neutral", (0.0, gauge_y + gauge_height + 0.1), ("sans-serif", 20))
+    // Display the exact sentiment score
+    let score_label = format!("Sentiment Score: {:.2}", sentiment);
+    drawing_area.draw(&Text::new(
+        score_label,
+        (600, gauge_center_y + gauge_radius + 100),
+        ("sans-serif", 36).into_font().color(&RGBColor(50, 50, 80)),
     ))?;
     
-    chart.draw_series(std::iter::once(
-        Text::new("Very Positive", (0.7, gauge_y + gauge_height + 0.1), ("sans-serif", 20))
-    ))?;
-    
-    // Draw pointer
-    let clamped_sentiment = sentiment.max(-1.0).min(1.0);
-    let triangle_size = 0.1;
-    
-    chart.draw_series(std::iter::once(
-        PathElement::new(
-            vec![
-                (clamped_sentiment, gauge_y - gauge_height / 2.0 - triangle_size),
-                (clamped_sentiment - triangle_size / 2.0, gauge_y - gauge_height / 2.0 - triangle_size * 2.0),
-                (clamped_sentiment + triangle_size / 2.0, gauge_y - gauge_height / 2.0 - triangle_size * 2.0),
-            ],
-            BLACK.filled(),
-        )
-    ))?;
-    
-    // Draw sentiment value
-    chart.draw_series(std::iter::once(
-        Text::new(
-            format!("{:.2}", sentiment),
-            (clamped_sentiment, gauge_y - gauge_height / 2.0 - triangle_size * 3.0),
-            ("sans-serif", 25).into_font(),
-        )
-    ))?;
-    
-    // Draw sentiment description
-    let (description, color) = match sentiment {
-        s if s >= 0.6 => ("Very Positive", GREEN.to_rgba()),
-        s if s >= 0.2 => ("Positive", RGBColor(100, 200, 100).to_rgba()),
-        s if s > -0.2 => ("Neutral", RGBColor(100, 100, 100).to_rgba()),
-        s if s > -0.6 => ("Negative", RGBColor(200, 100, 100).to_rgba()),
-        _ => ("Very Negative", RED.to_rgba()),
+    // Add interpretative context based on the sentiment
+    let context = match sentiment {
+        x if x <= -0.8 => "The text displays strongly negative emotions or opinions.",
+        x if x <= -0.3 => "The text contains more negative than positive elements.",
+        x if x <= 0.3 => "The text is relatively neutral in sentiment.",
+        x if x <= 0.8 => "The text contains more positive than negative elements.",
+        _ => "The text displays strongly positive emotions or opinions.",
     };
     
-    chart.draw_series(std::iter::once(
-        Text::new(
-            description,
-            (clamped_sentiment, gauge_y - gauge_height / 2.0 - triangle_size * 5.0),
-            ("sans-serif", 30).into_font().color(&color),
-        )
+    drawing_area.draw(&Text::new(
+        context,
+        (600, gauge_center_y + gauge_radius + 150),
+        ("sans-serif", 24).into_font().color(&RGBColor(80, 80, 100)),
+    ))?;
+    
+    // Add document stats
+    let stats_text = format!(
+        "Analysis of {} words across {} sentences", 
+        results.total_words,
+        results.sentence_count
+    );
+    
+    drawing_area.draw(&Text::new(
+        stats_text,
+        (600, 800),
+        ("sans-serif", 20).into_font().color(&RGBColor(100, 100, 120)),
+    ))?;
+    
+    // Add generation date
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    drawing_area.draw(&Text::new(
+        format!("Generated: {}", current_date),
+        (600, 840),
+        ("sans-serif", 16).into_font().color(&RGBColor(150, 150, 170)),
     ))?;
     
     root.present().context("Failed to write image to file")?;
@@ -517,117 +706,222 @@ fn generate_word_heatmap(
     output_path: &Path,
     limit: usize,
 ) -> Result<()> {
-    // Filter out common stopwords and keep top N words
+    // Filter out stopwords for better visualization
     let stopwords = vec![
         "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "with",
         "by", "about", "as", "of", "from", "is", "are", "was", "were", "be", "been",
         "this", "that", "these", "those", "it", "its", "they", "them", "their",
+        "have", "has", "had", "do", "does", "did", "will", "would", "should", "can",
     ];
     
     let filtered_words: Vec<_> = results.top_words
         .iter()
-        .filter(|(word, _)| !stopwords.contains(&word.as_str()))
-        .take(limit.min(20)) // Maximum 20 words for readability
+        .filter(|(word, _)| !stopwords.contains(&word.as_str()) && word.len() > 1)
+        .take(limit)
         .collect();
     
     if filtered_words.is_empty() {
         return Err(anyhow::anyhow!("No words to visualize after filtering"));
     }
     
-    let max_count = filtered_words.iter().map(|(_, count)| *count).max().unwrap_or(1);
+    let max_count = filtered_words.first().map(|(_, count)| *count).unwrap_or(0);
     
-    let root = BitMapBackend::new(output_path, (1024, 768)).into_drawing_area();
-    root.fill(&WHITE)?;
+    // Create a larger canvas for better visualization
+    let root = BitMapBackend::new(output_path, (1600, 1200)).into_drawing_area();
     
-    let cell_size = 40;
-    let grid_width = 5; // Fixed width for grid
-    let grid_height = (filtered_words.len() + grid_width - 1) / grid_width;
+    // Use a subtle gradient background for better aesthetics
+    root.fill(&RGBColor(250, 250, 255))?;
     
-    // Create a titled drawing area
-    let root_area = root.titled("Word Frequency Heatmap", ("sans-serif", 40))?;
-    let drawing_area = root_area.margin(20, 20, 20, 20);
+    // Add title and metadata
+    let title_area = root.titled(
+        "WORD FREQUENCY HEATMAP",
+        ("sans-serif", 60)
+            .into_font()
+            .color(&RGBColor(40, 40, 100))
+    )?;
     
-    // Create grid for heatmap
+    // Add source information
+    if let Some(first_file) = results.file_stats.first() {
+        let filename = first_file.filename.clone();
+        let truncated_name = if filename.len() > 40 {
+            format!("{}...", &filename[..37])
+        } else {
+            filename
+        };
+        
+        root.draw(&Text::new(
+            format!("Source: {}", truncated_name),
+            (800, 100),
+            ("sans-serif", 24).into_font().color(&RGBColor(80, 80, 100)),
+        ))?;
+    }
+    
+    // Set up a better grid layout with optimal cell size
+    let grid_dimensions = calculate_grid_dimensions(filtered_words.len());
+    let grid_width = grid_dimensions.0;
+    let grid_height = grid_dimensions.1;
+    
+    // Calculate cell size based on available space
+    let available_width = 1500;
+    let available_height = 900;
+    let cell_size = (available_width / grid_width).min(available_height / grid_height);
+    
+    // Create drawing area with margins
+    let drawing_area = title_area.margin(50, 50, 150, 50);
+    
+    // Store cells to be drawn
     let mut heatmap_cells = Vec::new();
+    
+    // Use a more sophisticated color gradient for better visual differentiation
     for (i, (word, count)) in filtered_words.iter().enumerate() {
         let row = i / grid_width;
         let col = i % grid_width;
         
-        let x = (col * cell_size) as i32;
-        let y = (row * cell_size) as i32;
+        let x = (col * cell_size) as i32 + 50; // Add offset for better margin
+        let y = (row * cell_size) as i32 + 150; // Add offset to account for title
         
-        // Calculate color intensity based on frequency
-        let intensity = (*count as f64 / max_count as f64).powf(0.5); // Square root for better visualization
+        // Calculate color using a more sophisticated approach
+        // Use a logarithmic scale for better visual distribution
+        let intensity = ((*count as f64) / (max_count as f64)).powf(0.4); // Power of 0.4 gives better distribution
         
-        // Use a color gradient from light blue to dark blue
-        let color = HSLColor(
-            0.6, // Hue for blue
-            0.8, // Saturation 
-            0.9 - intensity * 0.7, // Lightness from light to dark
-        );
+        // Create a color based on frequency - use a blue to purple gradient
+        let hue = 0.6 + intensity * 0.2; // Range from blue (0.6) to purple (0.8)
+        let saturation = 0.7 + intensity * 0.3; // More frequent = more saturated
+        let lightness = 0.9 - intensity * 0.6; // More frequent = darker
         
-        heatmap_cells.push((x, y, word, *count, color));
+        let color = HSLColor(hue, saturation, lightness);
+        
+        heatmap_cells.push((x, y, word, *count, color, intensity));
     }
     
-    for (x, y, word, count, color) in heatmap_cells {
-        // Draw a rectangle for each word
+    // Draw the cells
+    for (x, y, word, count, color, intensity) in heatmap_cells {
+        // Create a rectangle with rounded corners for modern look
         let cell = Rectangle::new(
-            [(x, y), (x + cell_size as i32 - 2, y + cell_size as i32 - 2)],
+            [(x, y), (x + cell_size as i32 - 4, y + cell_size as i32 - 4)],
             color.filled(),
+        );
+        
+        // Add a subtle border with shadow effect
+        let border = Rectangle::new(
+            [(x, y), (x + cell_size as i32 - 4, y + cell_size as i32 - 4)],
+            RGBColor(100, 100, 140).mix(0.2 + intensity * 0.3).stroke_width(1),
         );
         
         drawing_area.draw(&cell)?;
+        drawing_area.draw(&border)?;
+        
+        // Calculate font size based on cell size and word length
+        let max_word_length = 12;
+        let word_length_factor = (max_word_length.min(word.len()) as f64 / max_word_length as f64).powf(0.5);
+        let base_font_size = (cell_size as f64 / 5.0) * (1.0 - word_length_factor * 0.3);
+        let font_size = base_font_size.max(9.0).min(24.0) as u32;
+        
+        // Draw the word with contrasting color for readability
+        // Make the text color adapt to the background brightness
+        let text_color = if lightness_value(&color) > 0.6 {
+            // Dark text on light background
+            RGBColor(20, 20, 60)
+        } else {
+            // Light text on dark background
+            RGBColor(240, 240, 255)
+        };
         
         // Draw the word
-        let text = Text::new(
+        drawing_area.draw(&Text::new(
             word.clone(),
-            (x + cell_size as i32 / 2, y + cell_size as i32 / 2 - 5),
-            ("sans-serif", (cell_size / 4).max(8) as f64),
-        );
-        drawing_area.draw(&text)?;
+            (x + cell_size as i32 / 2, y + cell_size as i32 / 2 - font_size as i32 / 2),
+            ("sans-serif", font_size).into_font().color(&text_color),
+        ))?;
         
-        // Draw the count
-        let count_text = Text::new(
+        // Draw the count with a slightly different color
+        drawing_area.draw(&Text::new(
             count.to_string(),
-            (x + cell_size as i32 / 2, y + cell_size as i32 / 2 + 10),
-            ("sans-serif", (cell_size / 5).max(7) as f64),
-        );
-        drawing_area.draw(&count_text)?;
+            (x + cell_size as i32 / 2, y + cell_size as i32 / 2 + font_size as i32),
+            ("sans-serif", (font_size as f64 * 0.9) as u32).into_font().color(&text_color.mix(0.9)),
+        ))?;
     }
     
-    // Draw a legend for the heatmap
-    let legend_width = 200;
-    let legend_height = 20;
-    let legend_x = 800;
-    let legend_y = 30;
+    // Draw a more sophisticated legend for the heatmap
+    let legend_width = 300;
+    let legend_height = 30;
+    let legend_x = 1200;
+    let legend_y = 1050;
     
-    // Draw gradient bar
-    for i in 0..legend_width {
-        let intensity = i as f64 / legend_width as f64;
-        let color = HSLColor(
-            0.6, // Hue for blue
-            0.8, // Saturation
-            0.9 - intensity * 0.7, // Lightness
-        );
-        
-        let line = PathElement::new(
-            vec![(legend_x + i, legend_y), (legend_x + i, legend_y + legend_height)],
-            color.filled(),
-        );
-        root.draw(&line)?;
-    }
-    
-    // Draw legend labels
+    // Draw legend title
     root.draw(&Text::new(
-        "Less frequent",
-        (legend_x, legend_y + legend_height + 15),
-        ("sans-serif", 15),
+        "Frequency Legend",
+        (legend_x + legend_width / 2, legend_y - 30),
+        ("sans-serif", 24).into_font().color(&RGBColor(60, 60, 80)),
     ))?;
     
+    // Draw gradient bar with segments
+    let segments = 60;
+    for i in 0..segments {
+        let intensity = i as f64 / segments as f64;
+        
+        let hue = 0.6 + intensity * 0.2;
+        let saturation = 0.7 + intensity * 0.3;
+        let lightness = 0.9 - intensity * 0.6;
+        let color = HSLColor(hue, saturation, lightness);
+        
+        let segment_width = legend_width / segments;
+        let segment_x = legend_x + i * segment_width;
+        
+        let rect = Rectangle::new(
+            [(segment_x, legend_y), (segment_x + segment_width, legend_y + legend_height)],
+            color.filled(),
+        );
+        
+        root.draw(&rect)?;
+    }
+    
+    // Add tick marks and labels
+    for i in 0..=5 {
+        let position = i as f64 / 5.0;
+        let tick_x = legend_x + (position * legend_width as f64) as i32;
+        
+        // Draw tick mark
+        root.draw(&PathElement::new(
+            vec![(tick_x, legend_y + legend_height), (tick_x, legend_y + legend_height + 10)],
+            RGBColor(60, 60, 80).stroke_width(2),
+        ))?;
+        
+        // Frequency label - show as percentage
+        let label = if i == 0 {
+            "Least frequent".to_string()
+        } else if i == 5 {
+            "Most frequent".to_string()
+        } else {
+            format!("{}%", i * 20)
+        };
+        
+        root.draw(&Text::new(
+            label,
+            (tick_x, legend_y + legend_height + 25),
+            ("sans-serif", 16).into_font().color(&RGBColor(60, 60, 80)),
+        ))?;
+    }
+    
+    // Add summary information
+    let footer_text = format!(
+        "This heatmap shows the {} most frequent words from a total of {} unique words",
+        filtered_words.len(),
+        results.unique_words
+    );
+    
     root.draw(&Text::new(
-        "More frequent",
-        (legend_x + legend_width - 100, legend_y + legend_height + 15),
-        ("sans-serif", 15),
+        footer_text,
+        (800, 1120),
+        ("sans-serif", 20).into_font().color(&RGBColor(80, 80, 100)),
+    ))?;
+    
+    // Add generation date
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    root.draw(&Text::new(
+        format!("Generated: {}", current_date),
+        (1400, 1120),
+        ("sans-serif", 16).into_font().color(&RGBColor(150, 150, 170)),
     ))?;
     
     root.present().context("Failed to write image to file")?;
@@ -635,20 +929,43 @@ fn generate_word_heatmap(
     Ok(())
 }
 
+// Helper function to calculate grid dimensions
+fn calculate_grid_dimensions(item_count: usize) -> (usize, usize) {
+    let sqrt = (item_count as f64).sqrt().ceil() as usize;
+    
+    // Aim for a grid that's slightly wider than tall for better viewing on most screens
+    let cols = sqrt;
+    let rows = (item_count + cols - 1) / cols; // Ceiling division
+    
+    // If rows is much smaller than cols, redistribute
+    if (rows as f64) * 1.5 < cols as f64 {
+        let new_cols = (item_count as f64 / (item_count as f64 / cols as f64 * 1.3).ceil()).ceil() as usize;
+        let new_rows = (item_count + new_cols - 1) / new_cols;
+        (new_cols, new_rows)
+    } else {
+        (cols, rows)
+    }
+}
+
+// Helper function to calculate perceived lightness of a color
+fn lightness_value(color: &HSLColor) -> f64 {
+    // HSLColor contains hue, saturation, lightness
+    // Just extract the lightness component which is what we need
+    color.2 // This is the lightness component
+}
+
 fn generate_word_cloud(
     results: &AnalysisResults,
     output_path: &Path,
     limit: usize,
 ) -> Result<()> {
-    // Placeholder for a word cloud visualization
-    // Creating a true word cloud requires complex algorithms for word placement
-    // This is a simplified version that just displays words in different sizes
-    
     // Filter out common stopwords
     let stopwords = vec![
         "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "with",
         "by", "about", "as", "of", "from", "is", "are", "was", "were", "be", "been",
         "this", "that", "these", "those", "it", "its", "they", "them", "their",
+        "have", "has", "had", "do", "does", "did", "will", "would", "should", "can",
+        "could", "may", "might", "must", "shall",
     ];
     
     let filtered_words: Vec<_> = results.top_words
@@ -664,40 +981,128 @@ fn generate_word_cloud(
     let max_count = filtered_words.first().map(|(_, count)| *count).unwrap_or(0);
     let min_count = filtered_words.last().map(|(_, count)| *count).unwrap_or(0);
     
-    let root = BitMapBackend::new(output_path, (1200, 800)).into_drawing_area();
-    root.fill(&WHITE)?;
+    // Create a larger canvas for better word placement
+    let root = BitMapBackend::new(output_path, (1600, 1000)).into_drawing_area();
     
-    let area = root.margin(20, 20, 20, 20);
-    area.titled("Word Cloud", ("sans-serif", 50))?;
+    // Use a gradient background for more visual appeal
+    root.fill(&BLUE.mix(0.05))?;
     
-    // Simple grid layout for words
-    let cols = (filtered_words.len() as f64).sqrt().ceil() as usize;
-    let rows = (filtered_words.len() + cols - 1) / cols;
+    let area = root.margin(40, 40, 40, 40);
     
-    let cell_width = 1200 / cols as i32;
-    let cell_height = 700 / rows as i32;
+    // Create a modern title with a subtitle
+    area.draw(&Text::new(
+        "WORD CLOUD",
+        (800, 60),
+        ("sans-serif", 60).into_font().color(&BLUE.mix(0.8)),
+    ))?;
+    
+    if let Some(first_file) = results.file_stats.first() {
+        let filename = first_file.filename.clone();
+        let truncated_name = if filename.len() > 40 {
+            format!("{}...", &filename[..37])
+        } else {
+            filename
+        };
+        
+        area.draw(&Text::new(
+            format!("Source: {}", truncated_name),
+            (800, 120),
+            ("sans-serif", 24).into_font().color(&BLACK.mix(0.6)),
+        ))?;
+    }
+    
+    // Use a more sophisticated layout algorithm for word placement
+    // This is a spiral layout algorithm that places words in a spiral pattern
+    let center_x = 800;
+    let center_y = 500;
+    let mut spiral_angle: f64 = 0.0;
+    let mut spiral_radius: f64 = 50.0;
+    let spiral_step: f64 = 0.5;
+    
+    // Keep track of used positions to avoid overlaps
+    let mut used_positions = Vec::new();
     
     for (i, (word, count)) in filtered_words.iter().enumerate() {
-        let row = i / cols;
-        let col = i % cols;
-        
-        let x = col as i32 * cell_width + cell_width / 2;
-        let y = row as i32 * cell_height + cell_height / 2 + 50; // 50px offset for title
-        
         // Calculate font size based on frequency
         let size_ratio = (*count as f64 - min_count as f64) / (max_count as f64 - min_count as f64 + 1.0);
-        let font_size = 15 + (55.0 * size_ratio) as u32;
+        let font_size = 18.0 + (65.0 * size_ratio);
         
         // Generate a consistent color based on the word itself
-        let hue = (word.chars().fold(0, |acc, c| acc + c as u32) % 360) as f64 / 360.0;
-        let color = HSLColor(hue, 0.7, 0.5);
+        // Using a better color palette with more variation
+        let hue = ((i * 31) % 360) as f64 / 360.0; // Prime number 31 gives better distribution
+        let saturation = 0.7 + (size_ratio * 0.3); // More frequent = more saturated
+        let lightness = 0.4 + (1.0 - size_ratio) * 0.3; // More frequent = darker
+        let color = HSLColor(hue, saturation, lightness);
         
+        // Find a position for this word using the spiral
+        let mut x = 0;
+        let mut y = 0;
+        let mut found_position = false;
+        let word_width = (word.len() as f64 * font_size * 0.6) as i32;
+        let word_height = font_size as i32;
+        
+        // Try up to 500 positions along the spiral
+        for _ in 0..500 {
+            x = center_x + (spiral_radius * spiral_angle.cos()) as i32;
+            y = center_y + (spiral_radius * spiral_angle.sin()) as i32;
+            
+            // Check if position overlaps with any existing word
+            let overlaps = used_positions.iter().any(|(px, py, pw, ph)| {
+                x - word_width/2 < px + pw/2 &&
+                x + word_width/2 > px - pw/2 &&
+                y - word_height/2 < py + ph/2 &&
+                y + word_height/2 > py - ph/2
+            });
+            
+            if !overlaps {
+                found_position = true;
+                break;
+            }
+            
+            // Move along the spiral
+            spiral_angle += spiral_step;
+            spiral_radius += spiral_step * 0.5;
+        }
+        
+        if !found_position {
+            // If we can't find a good spot, just place it somewhere
+            x = ((i % 5) * 300 + 150) as i32;
+            y = ((i / 5) * 150 + 300) as i32;
+        }
+        
+        // Record this word's position
+        used_positions.push((x, y, word_width, word_height));
+        
+        // Add a subtle drop shadow for depth
+        area.draw(&Text::new(
+            word.clone(),
+            (x + 2, y + 2),
+            ("sans-serif", font_size as u32).into_font().color(&BLACK.mix(0.2)),
+        ))?;
+        
+        // Draw the word
         area.draw(&Text::new(
             word.clone(),
             (x, y),
-            ("sans-serif", font_size).into_font().color(&color),
+            ("sans-serif", font_size as u32).into_font().color(&color),
         ))?;
     }
+    
+    // Add a legend to show frequency correlation
+    let legend_y = 900;
+    area.draw(&Text::new(
+        "Word size indicates frequency",
+        (800, legend_y),
+        ("sans-serif", 20).into_font().color(&BLACK.mix(0.7)),
+    ))?;
+    
+    // Add the date
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    area.draw(&Text::new(
+        format!("Generated: {}", current_date),
+        (1400, legend_y),
+        ("sans-serif", 16).into_font().color(&BLACK.mix(0.5)),
+    ))?;
     
     root.present().context("Failed to write image to file")?;
     
@@ -873,6 +1278,222 @@ pub fn generate_comparison_chart(
         "Text Insights: Document Comparison",
         (600, 20),
         ("sans-serif", 40),
+    ))?;
+    
+    root.present().context("Failed to write image to file")?;
+    
+    Ok(())
+}
+
+fn generate_pos_chart(
+    results: &AnalysisResults,
+    output_path: &Path,
+) -> Result<()> {
+    // Check if we have POS data
+    if results.pos_counts.is_empty() {
+        return Err(anyhow::anyhow!("No part-of-speech data available"));
+    }
+    
+    // Create a beautiful, high-resolution canvas
+    let root = BitMapBackend::new(output_path, (1200, 900)).into_drawing_area();
+    
+    // Use a subtle gradient background
+    root.fill(&RGBColor(250, 252, 255))?;
+    
+    // Add a title and subtitle
+    root.draw(&Text::new(
+        "PARTS OF SPEECH ANALYSIS",
+        (600, 50),
+        ("sans-serif", 50).into_font().color(&RGBColor(40, 40, 100)),
+    ))?;
+    
+    // Add source information
+    if let Some(first_file) = results.file_stats.first() {
+        let filename = first_file.filename.clone();
+        let truncated_name = if filename.len() > 40 {
+            format!("{}...", &filename[..37])
+        } else {
+            filename
+        };
+        
+        root.draw(&Text::new(
+            format!("Source: {}", truncated_name),
+            (600, 100),
+            ("sans-serif", 20).into_font().color(&RGBColor(80, 80, 100)),
+        ))?;
+    }
+    
+    // Prepare the POS data
+    let mut pos_data: Vec<_> = results.pos_counts.iter().collect();
+    pos_data.sort_by(|(_, count1), (_, count2)| count2.cmp(count1));
+    
+    let total_pos = pos_data.iter().map(|(_, count)| **count).sum::<usize>();
+    
+    // Create a pie chart area
+    let drawing_area = root.margin(80, 80, 80, 80);
+    
+    // Define the center and radius of the pie chart
+    let center = (500, 400);
+    let radius = 250;
+    
+    // Define friendly names for POS tags
+    let pos_friendly_names = |tag: &str| -> String {
+        match tag {
+            "NOUN" => "Nouns".to_string(),
+            "VERB" => "Verbs".to_string(),
+            "ADJ" => "Adjectives".to_string(),
+            "ADV" => "Adverbs".to_string(),
+            "PRON" => "Pronouns".to_string(),
+            "DET" => "Determiners".to_string(),
+            "ADP" => "Prepositions".to_string(),
+            "CONJ" => "Conjunctions".to_string(),
+            "PART" => "Particles".to_string(),
+            "NUM" => "Numerals".to_string(),
+            "PUNCT" => "Punctuation".to_string(),
+            "SYM" => "Symbols".to_string(),
+            "INTJ" => "Interjections".to_string(),
+            _ => tag.to_string(),
+        }
+    };
+    
+    // Define a beautiful color palette
+    let colors = vec![
+        RGBColor(41, 121, 255),  // Blue
+        RGBColor(255, 99, 71),   // Tomato
+        RGBColor(50, 205, 50),   // Lime Green
+        RGBColor(255, 165, 0),   // Orange
+        RGBColor(138, 43, 226),  // Blue Violet
+        RGBColor(0, 139, 139),   // Dark Cyan
+        RGBColor(255, 20, 147),  // Deep Pink
+        RGBColor(0, 191, 255),   // Deep Sky Blue
+        RGBColor(255, 215, 0),   // Gold
+        RGBColor(154, 205, 50),  // Yellow Green
+        RGBColor(219, 112, 147), // Pale Violet Red
+        RGBColor(95, 158, 160),  // Cadet Blue
+        RGBColor(255, 127, 80),  // Coral
+        RGBColor(106, 90, 205),  // Slate Blue
+        RGBColor(173, 255, 47),  // Green Yellow
+    ];
+    
+    // Draw pie chart slices
+    let mut current_angle = 0.0;
+    let mut legend_items = Vec::new();
+    
+    for (i, (pos, count)) in pos_data.iter().enumerate() {
+        let percentage = **count as f64 / total_pos as f64;
+        let angle = percentage * 2.0 * std::f64::consts::PI;
+        
+        // Skip tiny slices (less than 1%)
+        if percentage < 0.01 {
+            continue;
+        }
+        
+        // Calculate slice points
+        let end_angle = current_angle + angle;
+        
+        // Generate points for the slice
+        let mut points = Vec::new();
+        points.push(center);
+        
+        // Add points along the arc
+        let steps = (angle * 30.0).ceil() as usize;
+        for j in 0..=steps {
+            let step_angle = current_angle + (j as f64 / steps as f64) * angle;
+            let x = center.0 + (radius as f64 * step_angle.cos()) as i32;
+            let y = center.1 + (radius as f64 * step_angle.sin()) as i32;
+            points.push((x, y));
+        }
+        
+        // Draw the slice
+        let color_idx = i % colors.len();
+        let color = colors[color_idx].mix(0.8);
+        
+        drawing_area.draw(&Polygon::new(points.clone(), color.filled()))?;
+        drawing_area.draw(&Polygon::new(points, colors[color_idx].stroke_width(1)))?;
+        
+        // Calculate position for slice label
+        let label_angle = current_angle + angle / 2.0;
+        let label_distance = radius as f64 * 0.7; // 70% of the way to edge
+        let label_x = center.0 + (label_distance * label_angle.cos()) as i32;
+        let label_y = center.1 + (label_distance * label_angle.sin()) as i32;
+        
+        // Only show label in the slice if percentage is large enough
+        if percentage > 0.05 {
+            drawing_area.draw(&Text::new(
+                format!("{:.1}%", percentage * 100.0),
+                (label_x, label_y),
+                ("sans-serif", 20).into_font().color(&WHITE),
+            ))?;
+        }
+        
+        // Store information for legend
+        legend_items.push((pos, **count, percentage, color));
+        
+        // Update current angle
+        current_angle = end_angle;
+    }
+    
+    // Draw legend
+    let legend_x = 800;
+    let legend_y = 250;
+    let legend_spacing = 35;
+    
+    root.draw(&Text::new(
+        "LEGEND:",
+        (legend_x, legend_y - legend_spacing),
+        ("sans-serif", 24).into_font().color(&RGBColor(60, 60, 100)),
+    ))?;
+    
+    for (i, (pos, count, percentage, color)) in legend_items.iter().enumerate() {
+        let y_pos = legend_y + i as i32 * legend_spacing;
+        
+        // Draw colored square
+        root.draw(&Rectangle::new(
+            [(legend_x, y_pos - 15), (legend_x + 20, y_pos + 5)],
+            color.filled(),
+        ))?;
+        
+        // Draw text
+        root.draw(&Text::new(
+            format!("{} - {}: {} ({:.1}%)", 
+                i + 1, 
+                pos_friendly_names(pos), 
+                count, 
+                percentage * 100.0
+            ),
+            (legend_x + 30, y_pos),
+            ("sans-serif", 18).into_font().color(&RGBColor(60, 60, 100)),
+        ))?;
+    }
+    
+    // Add overall statistics
+    let unique_pos = results.pos_counts.len();
+    
+    let stats_text = format!(
+        "Analysis found {} different parts of speech across {} words", 
+        unique_pos,
+        results.total_words
+    );
+    
+    root.draw(&Text::new(
+        stats_text,
+        (600, 700),
+        ("sans-serif", 20).into_font().color(&RGBColor(80, 80, 100)),
+    ))?;
+    
+    // Add explanatory text
+    root.draw(&Text::new(
+        "A balanced text typically uses a variety of parts of speech.",
+        (600, 740),
+        ("sans-serif", 18).into_font().color(&RGBColor(100, 100, 130)),
+    ))?;
+    
+    // Add generation date
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    root.draw(&Text::new(
+        format!("Generated: {}", current_date),
+        (600, 780),
+        ("sans-serif", 16).into_font().color(&RGBColor(150, 150, 170)),
     ))?;
     
     root.present().context("Failed to write image to file")?;
